@@ -1,0 +1,23 @@
+# Built binaries
+*.o
+hermes-app
+
+# vscode
+.vscode
+
+# Images
+*/*.jpg
+
+# TensorRT Engines
+*/*/*/*.engine
+*.engine
+
+# .so files
+*.so
+
+# Extra files
+.Makefile.swp
+.cproject
+.metadata/
+.project
+RemoteSystemTempFiles/
