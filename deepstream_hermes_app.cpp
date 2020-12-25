@@ -189,6 +189,13 @@ namespace WildFireDetection {
           // Ignore Null object.
           continue;
         }
+
+        gint class_index = obj_meta->class_id;
+
+        if(class_index == FIRE) {
+          changeBBoxColor(obj_meta, 1, 1.0, 0.0, 0.0, 0.25);
+        }
+
       }
       // Add Information to every stream
       addDisplayMeta(batch_meta, frame_meta);
