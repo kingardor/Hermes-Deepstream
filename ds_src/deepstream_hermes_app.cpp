@@ -464,7 +464,7 @@ namespace WildFireDetection {
     g_object_set(G_OBJECT(streammux), "width", MUXER_OUTPUT_WIDTH,
                "height", MUXER_OUTPUT_HEIGHT, "batch-size", num_sources,
                "batched-push-timeout", MUXER_BATCH_TIMEOUT_USEC,
-               "live-source", FALSE, NULL);
+               "live-source", TRUE, NULL);
 
     // Set all important properties of pgie_yolo_detector
     g_object_set(G_OBJECT(pgie_yolo_detector),
@@ -493,7 +493,7 @@ namespace WildFireDetection {
     }
 
     g_object_set(G_OBJECT(sink),
-                "sync", TRUE, NULL);
+                "sync", FALSE, NULL);
 
     tiler_rows = (guint)sqrt(num_sources);
     tiler_columns = (guint)ceil(1.0 * num_sources / tiler_rows);

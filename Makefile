@@ -12,10 +12,10 @@ ifeq ($(TARGET_DEVICE),aarch64)
   CFLAGS:= -DPLATFORM_TEGRA
 endif
 
-SRCS:= $(wildcard *.c)
-SRCS+= $(wildcard *.cpp)
+SRCS:= $(wildcard ds_src/*.c)
+SRCS+= $(wildcard ds_src/*.cpp)
 
-INCS:= $(wildcard *.h)
+INCS:= $(wildcard ds_src/*.h)
 
 PKGS:= gstreamer-1.0 opencv4
 
