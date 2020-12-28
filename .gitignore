@@ -5,9 +5,6 @@ hermes-app
 # vscode
 .vscode
 
-# Images
-*/*.jpg
-
 # TensorRT Engines
 */*/*/*.engine
 *.engine
