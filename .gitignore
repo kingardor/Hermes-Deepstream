@@ -15,6 +15,9 @@ hermes-app
 # .so files
 *.so
 
+# Input sources
+inputsources.txt
+
 # Extra files
 .Makefile.swp
 .cproject
