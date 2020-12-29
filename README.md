@@ -1,6 +1,10 @@
 # Hermes App
 
-Wildfires have been ever-increasing, devouring our planet earth, rendering our planet worse day by day. With early detection and mitigation, it is possible to reduce the damage caused by wildfires. To enable our front-line workers, here is Hermes, an AI-powered Computer Vision application that helps in early detection of Wildfires using reconnaissance drones.
+Wildfires have been ever-increasing, devouring our planet earth, rendering our planet worse day by day. With early detection and mitigation, it is possible to reduce the damage caused by wildfires.
+
+![Wildfires](resources/wildfires.png)
+
+To better enable our front-line workers, here is Hermes, an AI-powered Computer Vision application that helps in early detection of Wildfires using reconnaissance drones.
 
 ## Citations
 
@@ -17,8 +21,9 @@ Wildfires have been ever-increasing, devouring our planet earth, rendering our p
     1. [Installing pip packages](#Installing-pip-packages)
     2. [Connecting the Tello](#Connecting-the-Tello)
 4. [Running the Application](#Running-the-Application)
-    1. [Run with different input sources](#Run-with-different-input-sources)
-    2. [Run with the drone](#Run-with-the-drone)
+    1. [Cloning the repository](#Cloning-the-repository)
+    2. [Run with different input sources](#Run-with-different-input-sources)
+    3. [Run with the drone](#Run-with-the-drone)
 
 ## Introduction
 
@@ -117,7 +122,33 @@ Command command was unsuccessful. Message: False
 
 ## Running the Application
 
-### 1. Run with different input sources
+### 1. Cloning the repository
+
+This is a straightforward step, however, if you are new to git or git-lfs, I recommend glancing threw the steps.
+
+First, install git and git-lfs
+
+```sh
+sudo apt install git git-lfs
+```
+
+Next, clone the repository
+
+```sh
+# Using HTTPS
+git clone https://github.com/aj-ames/Hermes-Deepstream.git
+# Using SSH
+git clone git@github.com:aj-ames/Hermes-Deepstream.git
+```
+
+Finally, enable lfs and pull the yolo weights
+
+```sh
+git lfs install
+git lfs pull
+```
+
+### 2. Run with different input sources
 
 The computer vision part of the solution can be run on one or many input sources of multiple types, all powered using NVIDIA Deepstream.
 
@@ -142,7 +173,7 @@ Now, run the application by running the following command:
 ./hermes-app
 ```
 
-### 2. Run with the drone
+### 3. Run with the drone
 
 We utilize the livestream of the camera for real-time detection of wildfires.
 
