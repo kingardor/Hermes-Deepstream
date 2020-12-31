@@ -10,6 +10,7 @@ To better enable our front-line workers, here is Hermes, an AI-powered Computer 
 
 * [AlexeyAB/darknet](https://github.com/AlexeyAB/darknet)
 * [damiafuentes/DJITelloPy](https://github.com/damiafuentes/DJITelloPy)
+* [moses-palmer/pynput](https://github.com/moses-palmer/pynput)
 
 ## Index
 
@@ -18,16 +19,17 @@ To better enable our front-line workers, here is Hermes, an AI-powered Computer 
     1. [Install System Dependencies](#Install-System-Dependencies)
     2. [Install Deepstream](#Install-Deepstream)
 3. [Ryze Tello Setup](#Ryze-Tello-Setup)
-    1. [Installing pip packages](#Installing-pip-packages)
-    2. [Connecting the Tello](#Connecting-the-Tello)
+    1. [Install pip packages](#Installing-pip-packages)
+    2. [Redis](#Redis)
+    3. [Connect Tello](#Connecting-the-Tello)
 4. [Running the Application](#Running-the-Application)
-    1. [Cloning the repository](#Cloning-the-repository)
+    1. [Clone the repository](#Cloning-the-repository)
     2. [Run with different input sources](#Run-with-different-input-sources)
     3. [Run with the drone](#Run-with-the-drone)
 
 ## Introduction
 
-Hermes Application consists of two parts. An Intelligent Video Analytics Pipeline powered by Deepstream and NVIDIA Jetson Xavier NX and a reconnaissance drone, for which we will be using Ryze Tello.
+Hermes Application consists of two parts. An Intelligent Video Analytics Pipeline powered by Deepstream and NVIDIA Jetson Xavier NX and a reconnaissance drone, for which I have used a Ryze Tello.
 
 ![Tello and Jetson NX](resources/tellonx.jpg)
 
@@ -74,10 +76,17 @@ The dependencies needed are the following:
 
 ```sh
 djitellopy==1.5
+evdev==1.3.0
 imutils==0.5.3
 numpy==1.19.4
 opencv-python==4.4.0.46
+pycairo==1.20.0
 pygame==2.0.1
+PyGObject==3.38.0
+pynput==1.7.2
+python-xlib==0.29
+redis==3.5.3
+six==1.15.0
 ```
 
 You can either install them with pip command or use the requirements.txt file. Whatever sails your boat :)
@@ -90,7 +99,17 @@ pip3 install <packagename>
 pip3 install -r requirements.txt
 ```
 
-### 2. Connecting the Tello
+### 2. Redis
+
+Redis is used for it's queueing mechanism, which will used to create an rtsp stream of the tello camera stream
+
+Install the Redis Server
+
+```sh
+sudo apt install redis-server
+```
+
+### 3. Connect Tello
 
 First, connect the Jetson Device to the WiFi network of Tello.
 
@@ -122,7 +141,7 @@ Command command was unsuccessful. Message: False
 
 ## Running the Application
 
-### 1. Cloning the repository
+### 1. Clone the repository
 
 This is a straightforward step, however, if you are new to git or git-lfs, I recommend glancing threw the steps.
 
@@ -177,4 +196,33 @@ Now, run the application by running the following command:
 
 We utilize the livestream of the camera for real-time detection of wildfires.
 
-(WIP)
+Since the tello streams over UDP and the Deepstream Hermes app accepts RTSP as input, we need an intermediate UDP->RTSP converter. Also, we need to control the tello's movement.
+
+Run the following command to start the tello control script:
+
+```sh
+python3 tello-control.py
+```
+
+This script will start the tello stream on the following URL:
+
+```sh
+rtsp://127.0.0.1:6969/hermes
+```
+
+To control the drone with your keyboard, first press the `Left Shift` key.
+The following is a list of keys and what they do -
+
+`Left Shift` -> Toggle Keyboard controls
+`Right Shft` -> Take off drone
+`Space` -> Land drone
+`Up arrow` -> Increase Altitude
+`Down arrow` -> Decrease Altitude
+`Left arrow` -> Pan left
+`Right arrow` -> Pan right
+`w` -> Move forward
+`a` -> Move left
+`s` -> Move down
+`d` -> Move right
+
+Finally, add the url in `inputsources.txt` and start `./hermes-app`.
