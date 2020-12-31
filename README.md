@@ -213,16 +213,16 @@ rtsp://127.0.0.1:6969/hermes
 To control the drone with your keyboard, first press the `Left Shift` key.
 The following is a list of keys and what they do -
 
-`Left Shift` -> Toggle Keyboard controls
-`Right Shft` -> Take off drone
-`Space` -> Land drone
-`Up arrow` -> Increase Altitude
-`Down arrow` -> Decrease Altitude
-`Left arrow` -> Pan left
-`Right arrow` -> Pan right
-`w` -> Move forward
-`a` -> Move left
-`s` -> Move down
-`d` -> Move right
+* `Left Shift` -> Toggle Keyboard controls
+* `Right Shft` -> Take off drone
+* `Space` -> Land drone
+* `Up arrow` -> Increase Altitude
+* `Down arrow` -> Decrease Altitude
+* `Left arrow` -> Pan left
+* `Right arrow` -> Pan right
+* `w` -> Move forward
+* `a` -> Move left
+* `s` -> Move down
+* `d` -> Move right
 
 Finally, add the url in `inputsources.txt` and start `./hermes-app`.
