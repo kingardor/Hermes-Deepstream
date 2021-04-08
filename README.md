@@ -56,10 +56,10 @@ libjansson4=2.11-1
 
 ### 2. Install Deepstream
 
-Download the DeepStream 5.0.1 Jetson Debian package `deepstream-5.0_5.0.1-1_arm64.deb`, to the Jetson device from [here](https://developer.nvidia.com/assets/Deepstream/5.0/ga/secure/deepstream_sdk_5.0.1_amd64.deb). Then enter the command:
+Download the DeepStream 5.1 Jetson Debian package `deepstream-5.1_5.1.0-1_arm64.deb`, to the Jetson device from [here](https://developer.nvidia.com/deepstream-getting-started). Then enter the command:
 
 ```sh
-sudo apt-get install ./deepstream-5.0_5.0.1-1_arm64.deb
+sudo apt install deepstream-5.1_5.1.0-1_arm64.deb
 ```
 
 ## Ryze Tello Setup
