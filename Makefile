@@ -4,7 +4,7 @@ CXX:= g++ -std=c++17
 
 TARGET_DEVICE = $(shell g++ -dumpmachine | cut -f1 -d -)
 
-NVDS_VERSION:=5.0
+NVDS_VERSION:=5.1
 
 LIB_INSTALL_DIR?=/opt/nvidia/deepstream/deepstream-$(NVDS_VERSION)/lib/
 
@@ -21,7 +21,7 @@ PKGS:= gstreamer-1.0 opencv4
 
 OBJS:= $(SRCS:.cpp=.o)
 
-CFLAGS+= -I/opt/nvidia/deepstream/deepstream-5.0/sources/includes \
+CFLAGS+= -I/opt/nvidia/deepstream/deepstream-5.1/sources/includes \
 		 -DDS_VERSION_MINOR=0 -DDS_VERSION_MAJOR=5
 
 CFLAGS+= `pkg-config --cflags $(PKGS)`
