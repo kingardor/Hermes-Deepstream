@@ -6,26 +6,27 @@ Wildfires have been ever-increasing, devouring our planet earth, rendering our p
 
 To better enable our front-line workers, here is Hermes, an AI-powered Computer Vision application that helps in early detection of Wildfires using reconnaissance drones.
 
+Hermes now comes with a **web UI**: a live ops console for every camera and a flight mode for the drone, usable from any browser on the network.
+
+![Hermes live ops console](docs/screenshots/live-console.jpg)
+
 ## Citations
 
 * [AlexeyAB/darknet](https://github.com/AlexeyAB/darknet)
 * [damiafuentes/DJITelloPy](https://github.com/damiafuentes/DJITelloPy)
-* [moses-palmer/pynput](https://github.com/moses-palmer/pynput)
+* [bluenviron/mediamtx](https://github.com/bluenviron/mediamtx)
+* [tiangolo/fastapi](https://github.com/tiangolo/fastapi)
 
 ## Index
 
-1. [Introduction](#Introduction)
-2. [Deepstream Setup](#Deepstream-Setup)
-    1. [Install System Dependencies](#Install-System-Dependencies)
-    2. [Install Deepstream](#Install-Deepstream)
-3. [Ryze Tello Setup](#Ryze-Tello-Setup)
-    1. [Install pip packages](#Installing-pip-packages)
-    2. [Redis](#Redis)
-    3. [Connect Tello](#Connecting-the-Tello)
-4. [Running the Application](#Running-the-Application)
-    1. [Clone the repository](#Cloning-the-repository)
-    2. [Run with different input sources](#Run-with-different-input-sources)
-    3. [Run with the drone](#Run-with-the-drone)
+1. [Introduction](#introduction)
+2. [The web UI](#the-web-ui)
+3. [Deepstream Setup](#deepstream-setup)
+4. [Web UI Setup](#web-ui-setup)
+5. [Ryze Tello Setup](#ryze-tello-setup)
+6. [Running the Application](#running-the-application)
+7. [Trying the UI without a Jetson](#trying-the-ui-without-a-jetson)
+8. [Reference](#reference)
 
 ## Introduction
 
@@ -34,6 +35,49 @@ Hermes Application consists of two parts. An Intelligent Video Analytics Pipelin
 ![Tello and Jetson NX](resources/tellonx.jpg)
 
 This project is a proof-of-concept, trying to show that surveillance and mapping of wildfires can be done with a drone and an onboard Jetson platform.
+
+## The web UI
+
+### Live: ops console
+
+- **Video wall** with every input source. A tile gets a red outline while it has an active fire; click a tile to focus it.
+- **Fire events**, one per tracked fire (from the DCF tracker's IDs): a snapshot grabbed from the live video, source, when it was first seen, and peak confidence. Events move through **New → Active → Intermittent → Ended**, and an operator can **Acknowledge** them.
+- **Detection timeline** with a lane per source, showing when fire was present, with first-seen markers, a 5/10/30-minute window and Pause.
+- **Health**: pipeline state (running / stalled / offline), FPS per source, and the Jetson's GPU load, temperature and memory.
+
+### Flight: drone control
+
+![Hermes flight mode](docs/screenshots/flight-mode.jpg)
+
+- The drone's feed, large, with a minimal HUD (altitude, yaw, speed) and a centre reticle.
+- **Fire guidance**: works out which side of the frame the biggest fire is on and suggests the rotation that centres it (using the Tello's ~83° field of view).
+- **Telemetry** from the Tello: battery, flight time, height and temperature.
+- **Controls**: an arming switch, Take off / Land, a separate **Emergency stop**, on-screen pads (30 cm / 30° steps), keyboard (`W A S D`, arrows, `T`, `Space`) and gamepad sticks.
+
+**Safety built in:**
+
+- Nothing moves until the controls are armed.
+- Commands run one at a time.
+- Emergency stop always works and jumps the queue.
+- A keepalive stops the Tello from auto-landing after 15 s of hovering.
+- If every operator's browser disconnects, the drone **lands and disarms automatically** after 10 s.
+
+<sub>The screenshots use the built-in demo data: the replayed detections are taken from `resources/wildfires.png`. The live console screenshot went through the real video path (RTSP → MediaMTX → WebRTC).</sub>
+
+### How it fits together
+
+```text
+ cameras / drone ──▶ hermes-app (DeepStream) ──┬─▶ local display (optional)
+                     YOLOv3 + DCF tracker       ├─▶ RTSP :8555/hermes ──▶ MediaMTX ──WebRTC──▶ browser
+                                                └─▶ Redis  hermes:detections ──▶ backend ──WebSocket──▶ browser
+ Tello ◀──── commands / telemetry ──── backend (FastAPI :8080, serves the UI) ◀──── browser
+ Tello camera ──▶ backend relay rtsp://127.0.0.1:6969/hermes ──▶ hermes-app (as a source)
+```
+
+- **hermes-app** publishes every frame's detections (source, track ID, confidence, box) to Redis, and writes its source list and tiler layout to `hermes:pipeline`. It also serves the annotated, tiled output as RTSP.
+- **MediaMTX** turns that RTSP into WebRTC for browsers (sub-second latency).
+- **backend/** turns detections into fire events, tracks health, owns the drone, and pushes everything to the UI over one WebSocket.
+- **web/** is plain HTML, CSS and JS; there's no build step. Each tile is a crop of the single tiled stream.
 
 ## Deepstream Setup
 
@@ -51,8 +95,13 @@ gstreamer1.0-plugins-bad \
 gstreamer1.0-plugins-ugly \
 gstreamer1.0-libav \
 libgstrtspserver-1.0-0 \
+libgstrtspserver-1.0-dev \
+libhiredis-dev \
+libboost-filesystem-dev \
 libjansson4=2.11-1
 ```
+
+`libgstrtspserver-1.0-dev` and `libhiredis-dev` are needed to build the RTSP output and the Redis publisher.
 
 ### 2. Install Deepstream
 
@@ -62,167 +111,182 @@ Download the DeepStream 5.1 Jetson Debian package `deepstream-5.1_5.1.0-1_arm64.
 sudo apt install deepstream-5.1_5.1.0-1_arm64.deb
 ```
 
-## Ryze Tello Setup
+## Web UI Setup
 
-### 1. Installing pip packages
+### 1. Redis
 
-First, we need to install python dependencies. Make sure you have a working build of python3.7/3.8
-
-```sh
-sudo apt install python3-dev python3-pip
-```
-
-The dependencies needed are the following:
-
-```sh
-djitellopy==1.5
-evdev==1.3.0
-imutils==0.5.3
-numpy==1.19.4
-opencv-python==4.4.0.46
-pycairo==1.20.0
-pygame==2.0.1
-PyGObject==3.38.0
-pynput==1.7.2
-python-xlib==0.29
-redis==3.5.3
-six==1.15.0
-```
-
-You can either install them with pip command or use the requirements.txt file. Whatever sails your boat :)
-
-```sh
-# For individial packages
-pip3 install <packagename>
-
-# For requirements.txt
-pip3 install -r requirements.txt
-```
-
-### 2. Redis
-
-Redis is used for it's queueing mechanism, which will used to create an rtsp stream of the tello camera stream
-
-Install the Redis Server
+Redis carries detections from the DeepStream app to the web UI backend.
 
 ```sh
 sudo apt install redis-server
 ```
 
-### 3. Connect Tello
+### 2. MediaMTX
+
+MediaMTX re-streams the pipeline's RTSP output to browsers over WebRTC. Download the `linux_arm64` (or `linux_arm64v8`) build from the [MediaMTX releases](https://github.com/bluenviron/mediamtx/releases) and keep the `mediamtx` binary next to this repo's [`mediamtx.yml`](mediamtx.yml).
+
+Browsers need TCP **8889** and UDP **8189** to reach the Jetson. If they're on another network, set `webrtcAdditionalHosts` in `mediamtx.yml` to the Jetson's IP.
+
+### 3. Backend
+
+The backend needs Python 3.8 or newer. The Tello camera relay also needs the GStreamer Python bindings (PyGObject).
+
+**JetPack 5 / Ubuntu 20.04**, where Python 3.8 is the system Python:
+
+```sh
+sudo apt install python3-venv python3-gi gir1.2-gst-rtsp-server-1.0
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install -r backend/requirements.txt
+```
+
+**JetPack 4.x / Ubuntu 18.04**, where the apt `python3-gi` is built for Python 3.6, so install PyGObject with pip instead:
+
+```sh
+sudo apt install python3.8 python3.8-venv python3.8-dev \
+  libgirepository1.0-dev libcairo2-dev gir1.2-gst-rtsp-server-1.0
+python3.8 -m venv .venv
+.venv/bin/pip install -r backend/requirements.txt PyGObject
+```
+
+Without `--drone`, the backend doesn't need PyGObject at all.
+
+## Ryze Tello Setup
+
+### 1. Connect Tello
 
 First, connect the Jetson Device to the WiFi network of Tello.
 
 ![Ryze Tello WiFi](resources/dronewifi.png)
 
-Next, run the following code to verify connectivity
+The backend connects to the Tello itself when started with `--drone`. To check connectivity by hand:
 
 ```python
-# Importing the Tello Drone Library
 from djitellopy import Tello
-pkg = Tello()
-pkg.connect()
+tello = Tello()
+tello.connect()
+print(tello.get_battery())
 ```
 
-On successful connection, your output will look something like this
-
-```json
-Send command: command
-Response: b'ok'
-```
-
-If you get the following output, you may want to check your connection with the drone
-
-```json
-Send command: command
-Timeout exceed on command command
-Command command was unsuccessful. Message: False
-```
+If you get `Timeout exceed on command command`, check your Wi-Fi connection to the drone.
 
 ## Running the Application
 
 ### 1. Clone the repository
 
-This is a straightforward step, however, if you are new to git or git-lfs, I recommend glancing threw the steps.
-
-First, install git and git-lfs
-
 ```sh
 sudo apt install git git-lfs
-```
-
-Next, clone the repository
-
-```sh
-# Using HTTPS
-git clone https://github.com/aj-ames/Hermes-Deepstream.git
-# Using SSH
-git clone git@github.com:aj-ames/Hermes-Deepstream.git
-```
-
-Finally, enable lfs and pull the yolo weights
-
-```sh
+git clone https://github.com/kingardor/Hermes-Deepstream.git
+cd Hermes-Deepstream
 git lfs install
 git lfs pull
 ```
 
-### 2. Run with different input sources
-
-The computer vision part of the solution can be run on one or many input sources of multiple types, all powered using NVIDIA Deepstream.
-
-First, build the application by running the following command:
+### 2. Build
 
 ```sh
 make clean && make -j$(nproc)
 ```
 
-This will generate the binary called `hermes-app`. This is a one-time step and you need to do this only when you make source-code changes.
+This builds `hermes-app` and the custom YOLOv3 parser. You need to do it again only after source changes.
 
-Next, create a file called `inputsources.txt` and paste the path of videos or rtsp url.
+### 3. Choose your inputs
+
+Create `inputsources.txt` with one video file or RTSP URL per line. Blank lines and lines starting with `#` are ignored.
 
 ```sh
 file:///home/astr1x/Videos/Wildfire1.mp4
 rtsp://admin:admin%40123@192.168.1.1:554/stream
-```
-
-Now, run the application by running the following command:
-
-```sh
-./hermes-app
-```
-
-### 3. Run with the drone
-
-We utilize the livestream of the camera for real-time detection of wildfires.
-
-Since the tello streams over UDP and the Deepstream Hermes app accepts RTSP as input, we need an intermediate UDP->RTSP converter. Also, we need to control the tello's movement.
-
-Run the following command to start the tello control script:
-
-```sh
-python3 tello-control.py
-```
-
-This script will start the tello stream on the following URL:
-
-```sh
+# the drone, relayed by the backend:
 rtsp://127.0.0.1:6969/hermes
 ```
 
-To control the drone with your keyboard, first press the `Left Shift` key.
-The following is a list of keys and what they do -
+Stream credentials never reach the browser; the UI shows URLs without them.
 
-* `Left Shift` -> Toggle Keyboard controls
-* `Right Shft` -> Take off drone
-* `Space` -> Land drone
-* `Up arrow` -> Increase Altitude
-* `Down arrow` -> Decrease Altitude
-* `Left arrow` -> Pan left
-* `Right arrow` -> Pan right
-* `w` -> Move forward
-* `a` -> Move left
-* `s` -> Move down
-* `d` -> Move right
+### 4. Start everything
 
-Finally, add the url in `inputsources.txt` and start `./hermes-app`.
+Start these in four terminals, in this order:
+
+```sh
+# 1. Web UI backend (add --drone to fly the Tello; it also relays the Tello camera to RTSP)
+.venv/bin/python backend/hermes_backend.py --host 0.0.0.0 --drone
+
+# 2. MediaMTX
+./mediamtx mediamtx.yml
+
+# 3. The DeepStream app (--no-display to run without the local window)
+./hermes-app
+
+# 4. Open the UI from any machine on the network
+xdg-open http://<jetson-ip>:8080
+```
+
+The first run builds the TensorRT engine (`model_b<N>_gpu0_fp32.engine`), which takes a few minutes.
+
+The UI comes up straight away and shows "Waiting for the pipeline" until `hermes-app` publishes its sources.
+
+> [!IMPORTANT]
+> With `--host 0.0.0.0`, anyone on the network can open the UI, and that includes the drone controls. Add `--token <secret>` to the backend and open the UI as `http://<jetson-ip>:8080/?token=<secret>`.
+
+### 5. Fly
+
+1. Open **Flight**.
+2. Switch **Armed** on.
+3. Take off with the button, `T`, or gamepad **A**.
+4. Move with `W A S D` / the left stick, altitude with `↑ ↓`, and rotate with `← →` / the right stick.
+5. Land with **Land**, `Space`, or **B**.
+
+**Emergency stop** cuts the motors immediately, even mid-move. It has no keyboard shortcut on purpose.
+
+## Trying the UI without a Jetson
+
+The backend has a demo mode that replays the fires in `resources/wildfires.png` as live detections and simulates a Tello. It needs no DeepStream, Redis, MediaMTX or drone:
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
+.venv/bin/python backend/hermes_backend.py --demo
+# open http://127.0.0.1:8080
+```
+
+## Reference
+
+### hermes-app options
+
+| Option | Default | |
+|---|---|---|
+| `--no-display` | off | No local window (headless) |
+| `--no-rtsp` | off | Don't serve RTSP (disables video in the web UI) |
+| `--rtsp-port` | `8555` | RTSP output port (`rtsp://<host>:8555/hermes`) |
+| `--redis-host` / `--redis-port` | `127.0.0.1` / `6379` | Where to publish detections |
+
+### Backend options
+
+| Option | Default | |
+|---|---|---|
+| `--host` / `--port` | `127.0.0.1` / `8080` | Where to serve the UI |
+| `--token` | none | Require `?token=` for the UI and API |
+| `--drone` | off | Connect to a Tello and relay its camera to `rtsp://127.0.0.1:6969/hermes` |
+| `--drone-uri` | `rtsp://127.0.0.1:6969/hermes` | Which pipeline source is the drone |
+| `--whep-port` / `--whep-path` | `8889` / `/hermes/whep` | MediaMTX WebRTC endpoint |
+| `--demo` | off | Simulated pipeline and drone |
+
+Fire events are kept in `data/events.db` for 24 hours, and snapshots in `data/thumbs/`.
+
+### What changed from the original
+
+- **New:** a web UI (Live console + Flight mode), a FastAPI backend, RTSP output, and a Redis detection publisher in `hermes-app`.
+- **Drone control moved into the backend.** `tello-control.py` is replaced by `backend/drone.py`.
+- **Fixed: the drone's yaw keys were swapped** (left arrow turned the drone right).
+- **Fixed: the keyboard listener captured keys system-wide.** Controls now work only in the Flight tab, and only while armed.
+- **Fixed: the stream muxer's batch timeout was 4 s instead of the intended 40 ms**, which stalled every source whenever one lagged.
+- **Fixed: `models/YOLOv3WildFires/labels.txt` was empty.** It now holds `fire`.
+- **Cleanup:**
+  - Drone telemetry (`get_status()`) was never shown; it now feeds the UI.
+  - Removed the unused libcurl and OpenCV dependencies.
+  - `inputsources.txt` now accepts blank lines and comments.
+  - Removed stale names from the code.
+- **Upgrade:** djitellopy 2.4, which reads telemetry from the Tello's state packets instead of a blocking query per value.
+
+### Limits
+
+- The Tello has no GPS, so fires can't be placed on a map. That needs a GPS-equipped drone or fixed cameras at known positions.
+- Fire boxes are burned into the video by DeepStream's on-screen display; the UI doesn't draw them itself.

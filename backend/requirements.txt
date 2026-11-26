@@ -1,0 +1,9 @@
+# Hermes web UI backend (Python 3.8+)
+fastapi>=0.100,<0.116
+uvicorn>=0.22
+websockets>=11
+redis>=4.5            # redis.asyncio
+
+# Drone support (--drone). On a Jetson, install PyGObject/GStreamer and OpenCV from apt:
+#   sudo apt install python3-gi gir1.2-gst-rtsp-server-1.0 python3-opencv
+djitellopy==2.4.0     # 2.4 decodes frames as BGR, which the RTSP relay expects

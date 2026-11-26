@@ -21,3 +21,11 @@ inputsources.txt
 .metadata/
 .project
 RemoteSystemTempFiles/
+
+# Web UI backend runtime data (event log, fire snapshots)
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/

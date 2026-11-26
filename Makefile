@@ -17,7 +17,7 @@ SRCS+= $(wildcard ds_src/*.cpp)
 
 INCS:= $(wildcard ds_src/*.h)
 
-PKGS:= gstreamer-1.0 opencv4
+PKGS:= gstreamer-1.0 gstreamer-rtsp-server-1.0
 
 OBJS:= $(SRCS:.cpp=.o)
 
@@ -34,11 +34,9 @@ LIBS+= -L$(LIB_INSTALL_DIR) -L/usr/local/cuda/lib64 -lcudart \
 
 LIBS+= -pthread -O3 -Ofast
 
-LIBS+= -lcurl -lgnutls -luuid -lnvbufsurface -lnvbufsurftransform
+LIBS+= -lhiredis -luuid -lnvbufsurface -lnvbufsurftransform
 
-LIBS+=  -lopencv_core -lopencv_highgui -lopencv_imgproc -lboost_system -lopencv_imgcodecs -pthread -lz -lssl -lcrypto -lboost_program_options \
-		-lboost_filesystem -lboost_date_time -lboost_context -lboost_coroutine -lboost_chrono \
-		-lboost_log -lboost_thread -lboost_log_setup -lboost_regex -lboost_atomic
+LIBS+= -lboost_system -lboost_filesystem
 
 all: hermes objdets
 

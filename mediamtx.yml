@@ -1,0 +1,25 @@
+# MediaMTX config for Hermes: re-streams the DeepStream RTSP output to browsers over WebRTC.
+#   ./mediamtx mediamtx.yml
+# The web UI plays it from http://<jetson>:8889/hermes/whep.
+# MediaMTX: https://github.com/bluenviron/mediamtx (single binary, has linux/arm64 builds for Jetson)
+
+logLevel: info
+
+# The DeepStream app serves RTSP on 8555 (--rtsp-port); keep MediaMTX's own RTSP server off that port.
+rtspAddress: :8554
+rtmp: no
+hls: no
+srt: no
+
+webrtc: yes
+webrtcAddress: :8889
+# Lets the UI (served by the backend on :8080) fetch the WHEP endpoint. Browsers also need UDP 8189 (ICE).
+webrtcAllowOrigins: ['*']
+# If browsers on another network can't connect, add the Jetson's LAN IP here:
+# webrtcAdditionalHosts: [192.168.1.50]
+
+paths:
+  hermes:
+    # Pull the annotated, tiled output of hermes-app
+    source: rtsp://127.0.0.1:8555/hermes
+    sourceOnDemand: no

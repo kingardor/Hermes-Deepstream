@@ -27,6 +27,11 @@ namespace WildFireDetection {
 
     if (infile.is_open()) {
       while (getline(infile, source)) {
+        // Skip blank lines and comments so the file can be annotated
+        if (source.empty() || source[0] == '#') {
+          continue;
+        }
+
         GstPad *sinkpad, *srcpad;
         GstElement *source_bin = NULL;
         gchar pad_name[16] = {};
@@ -60,6 +65,7 @@ namespace WildFireDetection {
 
         gst_object_unref(srcpad);
         gst_object_unref(sinkpad);
+        source_uris.push_back(source);
         num_sources++;
       }
     }
@@ -95,22 +101,15 @@ namespace WildFireDetection {
     // To access the data that will be used to draw
     NvDsDisplayMeta *display_meta = NULL;
     NvOSD_TextParams *txt_params = NULL;
-    NvOSD_LineParams *line_params = NULL;
 
-    int offset = 0;
     display_meta = nvds_acquire_display_meta_from_pool(batch_meta);
     txt_params = display_meta->text_params;
-    line_params = display_meta->line_params;
     display_meta->num_labels = 1;
 
-    // if (txt_params->display_text)
-    //   g_free (txt_params->display_text);
     txt_params->display_text = (char *)g_malloc0(MAX_DISPLAY_LEN);
 
-    update_fps(frame_meta->source_id);
-
-    offset = snprintf(txt_params->display_text, MAX_DISPLAY_LEN, "Source: %d | FPS: %d | ",
-                      frame_meta->source_id, fps[frame_meta->source_id].display_fps);
+    snprintf(txt_params->display_text, MAX_DISPLAY_LEN, "Source: %d | FPS: %d",
+             frame_meta->source_id, fps[frame_meta->source_id].display_fps);
 
     /* Now set the offsets where the string should appear */
     txt_params->x_offset = 10;
@@ -134,73 +133,162 @@ namespace WildFireDetection {
     nvds_add_display_meta_to_frame(frame_meta, display_meta);
   }
 
+  /* ---------------------------------------------------------------------------
+   * Redis publishing for the web UI.
+   * Every frame of every source publishes one JSON message, even with no
+   * detections, so the backend can also tell the pipeline is alive.
+   * ------------------------------------------------------------------------- */
+  gboolean
+  Hermes::redis_ready() {
+    if (redis && !redis->err) {
+      return TRUE;
+    }
+    // Retry at most every 5 s so a missing Redis never slows the pipeline down
+    if (system_clock::now() < redis_retry_at) {
+      return FALSE;
+    }
+    redis_retry_at = system_clock::now() + std::chrono::seconds(5);
+    if (redis) {
+      redisFree(redis);
+      redis = NULL;
+    }
+    struct timeval timeout = {0, 200000};  // 200 ms
+    redis = redisConnectWithTimeout(redis_host_s.c_str(), redis_port_i, timeout);
+    if (!redis || redis->err) {
+      g_printerr("Redis unavailable at %s:%d (%s); web UI will not get detections. Retrying.\n",
+                 redis_host_s.c_str(), redis_port_i, redis ? redis->errstr : "allocation failed");
+      if (redis) {
+        redisFree(redis);
+        redis = NULL;
+      }
+      return FALSE;
+    }
+    redisSetTimeout(redis, timeout);
+    g_print("Publishing detections to redis://%s:%d %s\n", redis_host_s.c_str(), redis_port_i,
+            REDIS_DETECTIONS_CHANNEL);
+    return TRUE;
+  }
+
+  void
+  Hermes::publish_frame(NvDsFrameMeta *frame_meta) {
+    if (!redis_ready()) {
+      return;
+    }
+
+    gint64 now_ms = duration_cast<std::chrono::milliseconds>(
+        system_clock::now().time_since_epoch()).count();
+
+    std::ostringstream json;
+    json << "{\"t\":" << now_ms
+         << ",\"src\":" << frame_meta->source_id
+         << ",\"frame\":" << frame_meta->frame_num
+         << ",\"fps\":" << fps[frame_meta->source_id].display_fps
+         << ",\"w\":" << MUXER_OUTPUT_WIDTH
+         << ",\"h\":" << MUXER_OUTPUT_HEIGHT
+         << ",\"objs\":[";
+
+    bool first = true;
+    for (NvDsMetaList *l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
+      NvDsObjectMeta *obj = (NvDsObjectMeta *)l_obj->data;
+      if (obj == NULL || obj->class_id != FIRE) {
+        continue;
+      }
+      // Rect is in muxer coordinates (MUXER_OUTPUT_WIDTH x MUXER_OUTPUT_HEIGHT) for this source
+      json << (first ? "" : ",")
+           << "{\"id\":" << obj->object_id
+           << ",\"cls\":\"" << class_names[FIRE] << "\""
+           << ",\"conf\":" << obj->confidence
+           << ",\"x\":" << (gint)obj->rect_params.left
+           << ",\"y\":" << (gint)obj->rect_params.top
+           << ",\"bw\":" << (gint)obj->rect_params.width
+           << ",\"bh\":" << (gint)obj->rect_params.height << "}";
+      first = false;
+    }
+    json << "]}";
+
+    redisReply *reply = (redisReply *)redisCommand(redis, "PUBLISH %s %s",
+                                                   REDIS_DETECTIONS_CHANNEL, json.str().c_str());
+    if (reply) {
+      freeReplyObject(reply);
+    }
+    else {
+      // Connection dropped; redis_ready() will reconnect later
+      redis_retry_at = system_clock::now() + std::chrono::seconds(5);
+    }
+  }
+
+  void
+  Hermes::publish_pipeline_info(guint rows, guint columns) {
+    if (!redis_ready()) {
+      return;
+    }
+    std::ostringstream sources;
+    sources << "[";
+    for (size_t i = 0; i < source_uris.size(); i++) {
+      std::string uri = source_uris[i];
+      std::string escaped;
+      for (char c : uri) {
+        if (c == '"' || c == '\\') escaped += '\\';
+        escaped += c;
+      }
+      sources << (i ? "," : "") << "\"" << escaped << "\"";
+    }
+    sources << "]";
+
+    gint64 now_ms = duration_cast<std::chrono::milliseconds>(
+        system_clock::now().time_since_epoch()).count();
+    std::string rtsp = rtsp_off ? std::string("") :
+        str(boost::format("rtsp://127.0.0.1:%d%s") % rtsp_port % RTSP_MOUNT);
+
+    redisReply *reply = (redisReply *)redisCommand(redis,
+        "HSET %s sources %s rows %u columns %u width %d height %d tile_width %d tile_height %d started %lld rtsp %s",
+        REDIS_PIPELINE_KEY, sources.str().c_str(), rows, columns,
+        MUXER_OUTPUT_WIDTH, MUXER_OUTPUT_HEIGHT, TILED_OUTPUT_WIDTH, TILED_OUTPUT_HEIGHT,
+        (long long)now_ms, rtsp.c_str());
+    if (reply) {
+      freeReplyObject(reply);
+    }
+  }
+
+  /* The probe sits on the tiler's sink pad, so object coordinates are still
+   * per source (muxer resolution) and every source's frame meta is present. */
   GstPadProbeReturn
   Hermes::tiler_src_pad_buffer_probe(GstPad *pad, GstPadProbeInfo *info,
                             gpointer u_data) {
     GstBuffer *buf = (GstBuffer *)info->data;
 
-    // To access the entire batch data
-    NvDsBatchMeta *batch_meta = NULL;
-
-    NvDsObjectMeta *obj_meta = NULL;
-    NvDsFrameMeta *frame_meta = NULL;
-
-    // To access the frame
-    NvBufSurface *surface = NULL;
-    // TO generate message meta
-    NvDsEventMsgMeta *msg_meta = NULL;
-
-    NvDsMetaList *l_frame = NULL;
-    NvDsMetaList *l_obj = NULL;
-
-    // Get original raw data
-    GstMapInfo in_map_info;
-    char *src_data = NULL;
-
-    if (!gst_buffer_map(buf, &in_map_info, GST_MAP_READ)) {
-      g_print("Error: Failed to map gst buffer\n");
-      gst_buffer_unmap(buf, &in_map_info);
-      return GST_PAD_PROBE_OK;
-    }
-
-    batch_meta = gst_buffer_get_nvds_batch_meta(buf);
-
+    NvDsBatchMeta *batch_meta = gst_buffer_get_nvds_batch_meta(buf);
     if (!batch_meta) {
       return GST_PAD_PROBE_OK;
     }
 
-    for (l_frame = batch_meta->frame_meta_list; l_frame != NULL;
+    for (NvDsMetaList *l_frame = batch_meta->frame_meta_list; l_frame != NULL;
         l_frame = l_frame->next) {
-      frame_meta = (NvDsFrameMeta *)(l_frame->data);
+      NvDsFrameMeta *frame_meta = (NvDsFrameMeta *)(l_frame->data);
 
       if (frame_meta == NULL) {
-        // Ignore Null frame meta.
         continue;
       }
 
-      guint person_count = 0;
+      update_fps(frame_meta->source_id);
 
-      for (l_obj = frame_meta->obj_meta_list; l_obj != NULL;
+      for (NvDsMetaList *l_obj = frame_meta->obj_meta_list; l_obj != NULL;
           l_obj = l_obj->next) {
 
-        obj_meta = (NvDsObjectMeta *)(l_obj->data);
+        NvDsObjectMeta *obj_meta = (NvDsObjectMeta *)(l_obj->data);
 
         if (obj_meta == NULL) {
-          // Ignore Null object.
           continue;
         }
 
-        gint class_index = obj_meta->class_id;
-
-        if(class_index == FIRE) {
+        if (obj_meta->class_id == FIRE) {
           changeBBoxColor(obj_meta, 1, 1.0, 0.0, 0.0, 0.25);
         }
-
       }
-      // Add Information to every stream
+      // Source / FPS label on every stream, then hand the frame to the web UI
       addDisplayMeta(batch_meta, frame_meta);
+      publish_frame(frame_meta);
     }
-    gst_buffer_unmap(buf, &in_map_info);
     return GST_PAD_PROBE_OK;
   }
 
@@ -219,7 +307,6 @@ namespace WildFireDetection {
       g_printerr("WARNING from element %s: %s\n",
                 GST_OBJECT_NAME(msg->src), error->message);
       g_free(debug);
-      g_printerr("Warning: %s\n", error->message);
       g_error_free(error);
       break;
     }
@@ -281,6 +368,7 @@ namespace WildFireDetection {
         g_printerr("Error: Decodebin did not pick nvidia decoder plugin.\n");
       }
     }
+    gst_caps_unref(caps);
   }
 
   void
@@ -455,9 +543,18 @@ namespace WildFireDetection {
     return ret;
   }
 
+  // Encoder properties differ between Jetson and dGPU builds; only set what exists.
+  void
+  Hermes::set_if_exists(GstElement *element, const gchar *property, guint value) {
+    if (g_object_class_find_property(G_OBJECT_GET_CLASS(element), property)) {
+      g_object_set(G_OBJECT(element), property, value, NULL);
+    }
+  }
+
   int
   Hermes::configure_element_properties(int num_sources, GstElement *streammux, GstElement *pgie_yolo_detector,
-                               GstElement *nvtracker, GstElement *sink, GstElement *tiler) {
+                               GstElement *nvtracker, GstElement *sink, GstElement *tiler,
+                               guint *rows, guint *columns) {
 
     guint tiler_rows, tiler_columns;
 
@@ -474,20 +571,19 @@ namespace WildFireDetection {
     g_object_set(G_OBJECT(pgie_yolo_detector), "batch-size", num_sources, NULL);
 
     // Check if Engine Exists
-    if (boost::filesystem::exists(boost::filesystem::path(
-        WildFireDetection::Hermes::PGIE_YOLO_ENGINE_PATH))) {
+    if (boost::filesystem::exists(boost::filesystem::path(PGIE_YOLO_ENGINE_PATH))) {
 
       g_object_set(G_OBJECT(pgie_yolo_detector),
-                  "model-engine-file", WildFireDetection::Hermes::PGIE_YOLO_ENGINE_PATH.c_str(), NULL);
+                  "model-engine-file", PGIE_YOLO_ENGINE_PATH.c_str(), NULL);
     }
     else {
-      cout << str(boost::format("YOLO Engine for batch-size: %d and compute-mode: %s not found.")
-              % num_sources % COMPUTE_MODE) << endl;
-      return EXIT_FAILURE;
+      // nvinfer builds the engine from the cfg/weights in this case (first run takes a few minutes)
+      cout << str(boost::format("YOLO engine for batch-size %d / %s not found (%s); nvinfer will build it.")
+              % num_sources % COMPUTE_MODE % PGIE_YOLO_ENGINE_PATH) << endl;
     }
 
     // Set necessary properties of the tracker element
-    if (!WildFireDetection::Hermes::set_tracker_properties(nvtracker)) {
+    if (!set_tracker_properties(nvtracker)) {
       g_printerr("Failed to set tracker properties. Exiting.\n");
       return -1;
     }
@@ -501,7 +597,38 @@ namespace WildFireDetection {
     g_object_set(G_OBJECT(tiler), "rows", tiler_rows, "columns", tiler_columns,
                 "width", TILED_OUTPUT_WIDTH, "height", TILED_OUTPUT_HEIGHT, NULL);
 
+    *rows = tiler_rows;
+    *columns = tiler_columns;
     return EXIT_SUCCESS;
+  }
+
+  /* Serve the encoded tiled output over RTSP. The encoder branch sends RTP to a
+   * local UDP port; this RTSP server wraps it (same approach as deepstream-app). */
+  gboolean
+  Hermes::start_rtsp_server() {
+    GstRTSPServer *server = gst_rtsp_server_new();
+    gchar port_str[16];
+    g_snprintf(port_str, sizeof(port_str), "%d", rtsp_port);
+    g_object_set(server, "service", port_str, NULL);
+
+    GstRTSPMountPoints *mounts = gst_rtsp_server_get_mount_points(server);
+    GstRTSPMediaFactory *factory = gst_rtsp_media_factory_new();
+    gchar *launch = g_strdup_printf(
+        "( udpsrc name=pay0 port=%d buffer-size=524288 "
+        "caps=\"application/x-rtp, media=video, clock-rate=90000, "
+        "encoding-name=(string)H264, payload=96 \" )", RTSP_UDP_PORT);
+    gst_rtsp_media_factory_set_launch(factory, launch);
+    gst_rtsp_media_factory_set_shared(factory, TRUE);
+    gst_rtsp_mount_points_add_factory(mounts, RTSP_MOUNT, factory);
+    g_object_unref(mounts);
+    g_free(launch);
+
+    if (gst_rtsp_server_attach(server, NULL) == 0) {
+      g_printerr("Failed to start the RTSP server on port %d\n", rtsp_port);
+      return FALSE;
+    }
+    g_print("RTSP output: rtsp://<this-device>:%d%s\n", rtsp_port, RTSP_MOUNT);
+    return TRUE;
   }
 
   void Hermes::setPaths(guint num_sources) {
@@ -519,13 +646,25 @@ namespace WildFireDetection {
   }
 }
 
+/* Link `tee` -> queue -> ...elements, returning FALSE on failure. */
+static gboolean
+link_tee_branch(GstElement *tee, GstElement *first) {
+  GstPad *tee_pad = gst_element_get_request_pad(tee, "src_%u");
+  GstPad *sink_pad = gst_element_get_static_pad(first, "sink");
+  gboolean ok = tee_pad && sink_pad && gst_pad_link(tee_pad, sink_pad) == GST_PAD_LINK_OK;
+  if (sink_pad) gst_object_unref(sink_pad);
+  if (tee_pad) gst_object_unref(tee_pad);
+  return ok;
+}
+
 int main(int argc, char *argv[]) {
 
   WildFireDetection::Hermes hermes;
   GMainLoop *loop = NULL;
   GstElement *pipeline = NULL, *streammux = NULL, *sink = NULL,
              *pgie_yolo_detector = NULL, *nvtracker = NULL,
-             *nvvidconv = NULL, *nvosd = NULL, *tiler;
+             *nvvidconv = NULL, *nvosd = NULL, *tiler = NULL, *tee = NULL,
+             *display_queue = NULL;
 
   #ifdef PLATFORM_TEGRA
     GstElement *transform = NULL;
@@ -533,8 +672,8 @@ int main(int argc, char *argv[]) {
 
   GstBus *bus = NULL;
   guint bus_watch_id = 0;
-  GstPad *tiler_src_pad = NULL;
-  guint i;
+  GstPad *tiler_sink_pad = NULL;
+  guint tiler_rows = 1, tiler_columns = 1;
 
   // Standard GStreamer initialization
   gst_init(&argc, &argv);
@@ -558,9 +697,13 @@ int main(int argc, char *argv[]) {
   }
   g_option_context_free(ctx);
 
+  if (hermes.redis_host) {
+    WildFireDetection::Hermes::redis_host_s = hermes.redis_host;
+  }
+  WildFireDetection::Hermes::redis_port_i = hermes.redis_port;
+
   /* Create gstreamer elements */
-  // Create Pipeline element to connect all elements
-  pipeline = gst_pipeline_new("dsirisretail-pipeline");
+  pipeline = gst_pipeline_new("hermes-pipeline");
 
   // Stream Multiplexer for input
   streammux = gst_element_factory_make("nvstreammux", "stream-muxer");
@@ -572,57 +715,41 @@ int main(int argc, char *argv[]) {
   gst_bin_add(GST_BIN(pipeline), streammux);
 
   gint sources = hermes.create_input_sources(pipeline, streammux, num_sources);
-  if (sources == -1) {
+  if (sources <= 0) {
+    g_printerr("No input sources found in %s. Exiting.\n", SOURCE_PATH);
     return -1;
   }
-  else {
-    num_sources = sources;
-  }
+  num_sources = sources;
 
   hermes.setPaths(num_sources);
 
   // Primary GPU Inference Engine
   pgie_yolo_detector = gst_element_factory_make("nvinfer", "primary-yolo-nvinference-engine");
-
-  if (!pgie_yolo_detector) {
-    g_printerr("PGIE YOLO Detector could not be created.\n");
-    return -1;
-  }
-
-  // Initialize Tracker
+  // Tracker
   nvtracker = gst_element_factory_make("nvtracker", "tracker");
-
-  if (!nvtracker ) {
-    g_printerr("NVTRACKER could not be created.\n");
-    return -1;
-  }
-
-  // Compose all the sources into one 2D tiled window
+  // Compose all the sources into one 2D tiled frame
   tiler = gst_element_factory_make("nvmultistreamtiler", "nvtiler");
-
-  if (!tiler) {
-    g_printerr("SINK could not be created.\n");
-    return -1;
-  }
-
   // Use convertor to convert from NV12 to RGBA as required by nvosd
   nvvidconv = gst_element_factory_make("nvvideoconvert", "nvvideo-converter");
-
-  if (!nvvidconv) {
-    g_printerr("NVVIDCONV could not be created.\n");
-    return -1;
-  }
-
   // Create OSD to draw on the converted RGBA buffer
   nvosd = gst_element_factory_make("nvdsosd", "nv-onscreendisplay");
+  // Split the annotated video between the local display and the RTSP output
+  tee = gst_element_factory_make("tee", "output-tee");
+  display_queue = gst_element_factory_make("queue", "display-queue");
 
-  if (!nvosd) {
-    g_printerr("NVOSD could not be created.\n");
+  if (!pgie_yolo_detector || !nvtracker || !tiler || !nvvidconv || !nvosd || !tee || !display_queue) {
+    g_printerr("One of the DeepStream elements could not be created. Exiting.\n");
     return -1;
   }
-  /* Redner OSD Output */
+
   #ifdef PLATFORM_TEGRA
-    transform = gst_element_factory_make("nvegltransform", "nvegl-transform");
+    if (!hermes.display_off) {
+      transform = gst_element_factory_make("nvegltransform", "nvegl-transform");
+      if (!transform) {
+        g_printerr("Tegra element TRANSFORM could not be created. Exiting.\n");
+        return -1;
+      }
+    }
   #endif
 
   if (hermes.display_off) {
@@ -637,17 +764,10 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  #ifdef PLATFORM_TEGRA
-    if (!transform) {
-      g_printerr("Tegra element TRANSFORM could not be created. Exiting.\n");
-      return -1;
-    }
-  #endif
-
   int fail_safe = hermes.configure_element_properties(num_sources, streammux, pgie_yolo_detector,
-                                                      nvtracker, sink, tiler);
+                                                      nvtracker, sink, tiler, &tiler_rows, &tiler_columns);
 
-  if(fail_safe == -1) {
+  if (fail_safe != EXIT_SUCCESS) {
     return -1;
   }
   // Message Handler
@@ -655,61 +775,102 @@ int main(int argc, char *argv[]) {
   bus_watch_id = gst_bus_add_watch(bus, hermes.bus_call, loop);
   gst_object_unref(bus);
 
-  /* Set up the pipeline */
+  /* Main chain: mux -> detector -> tracker -> tiler -> convert -> OSD -> tee */
+  gst_bin_add_many(GST_BIN(pipeline),
+                   pgie_yolo_detector, nvtracker, tiler, nvvidconv, nvosd, tee, NULL);
+  if (!gst_element_link_many(streammux, pgie_yolo_detector, nvtracker,
+                             tiler, nvvidconv, nvosd, tee, NULL)) {
+    g_printerr("Elements could not be linked. Exiting.\n");
+    return -1;
+  }
+
+  /* Branch 1: local display (or a fakesink when --no-display) */
+  gst_bin_add_many(GST_BIN(pipeline), display_queue, sink, NULL);
   #ifdef PLATFORM_TEGRA
-    if (!hermes.display_off) {
-      gst_bin_add_many(GST_BIN(pipeline),
-                      pgie_yolo_detector, nvtracker, tiler, nvvidconv, nvosd, transform, sink, NULL);
-
-      if (!gst_element_link_many(streammux, pgie_yolo_detector, nvtracker,
-                                 tiler, nvvidconv, nvosd, transform, sink, NULL)) {
-        g_printerr("Elements could not be linked. Exiting.\n");
+    if (transform) {
+      gst_bin_add(GST_BIN(pipeline), transform);
+      if (!gst_element_link_many(display_queue, transform, sink, NULL)) {
+        g_printerr("Display branch could not be linked. Exiting.\n");
         return -1;
       }
     }
-    else {
-      gst_bin_add_many(GST_BIN(pipeline),
-                      pgie_yolo_detector, nvtracker, tiler, nvvidconv, nvosd, sink, NULL);
-
-      if (!gst_element_link_many(streammux, pgie_yolo_detector, nvtracker,
-                                 tiler, nvvidconv, nvosd, sink, NULL)) {
-        g_printerr("Elements could not be linked. Exiting.\n");
-        return -1;
-      }
+    else if (!gst_element_link(display_queue, sink)) {
+      g_printerr("Display branch could not be linked. Exiting.\n");
+      return -1;
     }
-
   #else
-    gst_bin_add_many(GST_BIN(pipeline),
-                    pgie_yolo_detector, nvtracker, tiler, nvvidconv, nvosd, sink, NULL);
-
-    if (!gst_element_link_many(streammux, pgie_yolo_detector, nvtracker,
-                               tiler, nvvidconv, nvosd, sink, NULL)) {
-      g_printerr("Elements could not be linked. Exiting.\n");
+    if (!gst_element_link(display_queue, sink)) {
+      g_printerr("Display branch could not be linked. Exiting.\n");
       return -1;
     }
   #endif
+  if (!link_tee_branch(tee, display_queue)) {
+    g_printerr("Could not link the display branch to the tee. Exiting.\n");
+    return -1;
+  }
 
-  /* Lets add probe to get informed of the meta data generated, we add probe to
-   * the sink pad of the osd element, since by that time, the buffer would have
-   * had got all the metadata. */
-  tiler_src_pad = gst_element_get_static_pad(tiler, "sink");
-  if (!tiler_src_pad) {
+  /* Branch 2: H.264 over RTSP for the web UI */
+  if (!hermes.rtsp_off) {
+    GstElement *rtsp_queue = gst_element_factory_make("queue", "rtsp-queue");
+    GstElement *rtsp_conv = gst_element_factory_make("nvvideoconvert", "rtsp-converter");
+    GstElement *rtsp_caps = gst_element_factory_make("capsfilter", "rtsp-caps");
+    GstElement *encoder = gst_element_factory_make("nvv4l2h264enc", "rtsp-encoder");
+    GstElement *parser = gst_element_factory_make("h264parse", "rtsp-parser");
+    GstElement *payloader = gst_element_factory_make("rtph264pay", "rtsp-payloader");
+    GstElement *udpsink = gst_element_factory_make("udpsink", "rtsp-udpsink");
+
+    if (!rtsp_queue || !rtsp_conv || !rtsp_caps || !encoder || !parser || !payloader || !udpsink) {
+      g_printerr("RTSP output elements could not be created. Exiting.\n");
+      return -1;
+    }
+
+    GstCaps *caps = gst_caps_from_string("video/x-raw(memory:NVMM), format=I420");
+    g_object_set(G_OBJECT(rtsp_caps), "caps", caps, NULL);
+    gst_caps_unref(caps);
+
+    g_object_set(G_OBJECT(encoder), "bitrate", RTSP_BITRATE, NULL);
+    WildFireDetection::Hermes::set_if_exists(encoder, "iframeinterval", 30);
+    WildFireDetection::Hermes::set_if_exists(encoder, "insert-sps-pps", 1);
+    WildFireDetection::Hermes::set_if_exists(encoder, "preset-level", 1);
+    #ifdef PLATFORM_TEGRA
+      WildFireDetection::Hermes::set_if_exists(encoder, "bufapi-version", 1);
+    #endif
+    g_object_set(G_OBJECT(payloader), "config-interval", 1, NULL);
+    g_object_set(G_OBJECT(udpsink), "host", "127.0.0.1", "port", RTSP_UDP_PORT,
+                 "async", FALSE, "sync", FALSE, NULL);
+
+    gst_bin_add_many(GST_BIN(pipeline), rtsp_queue, rtsp_conv, rtsp_caps, encoder,
+                     parser, payloader, udpsink, NULL);
+    if (!gst_element_link_many(rtsp_queue, rtsp_conv, rtsp_caps, encoder, parser,
+                               payloader, udpsink, NULL) ||
+        !link_tee_branch(tee, rtsp_queue)) {
+      g_printerr("RTSP output branch could not be linked. Exiting.\n");
+      return -1;
+    }
+    if (!hermes.start_rtsp_server()) {
+      return -1;
+    }
+  }
+
+  /* Probe on the tiler's sink pad: by then the buffer carries all detection
+   * and tracking metadata, still in per-source coordinates. */
+  tiler_sink_pad = gst_element_get_static_pad(tiler, "sink");
+  if (!tiler_sink_pad) {
     g_print("Unable to get sink pad\n");
   }
   else {
-    gst_pad_add_probe(tiler_src_pad, GST_PAD_PROBE_TYPE_BUFFER,
+    gst_pad_add_probe(tiler_sink_pad, GST_PAD_PROBE_TYPE_BUFFER,
                       hermes.tiler_src_pad_buffer_probe, NULL, NULL);
+    gst_object_unref(tiler_sink_pad);
   }
-  /* Set the pipeline to "playing" state */
+
+  // Tell the web UI backend which sources are in which tile
+  hermes.publish_pipeline_info(tiler_rows, tiler_columns);
+
   cout << "Now playing:" << endl;
-  std::ifstream infile(SOURCE_PATH);
-  std::string source;
-  if (infile.is_open()) {
-    while (getline(infile, source)) {
-      cout << source << endl;
-    }
+  for (const std::string &uri : hermes.source_uris) {
+    cout << uri << endl;
   }
-  infile.close();
 
   gst_element_set_state(pipeline, GST_STATE_PLAYING);
 
