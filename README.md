@@ -2,13 +2,11 @@
 
 Wildfires have been ever-increasing, devouring our planet earth, rendering our planet worse day by day. With early detection and mitigation, it is possible to reduce the damage caused by wildfires.
 
-![Wildfires](resources/wildfires.png)
+![Hermes live ops console: four camera feeds with fire detections, fire events, a detection timeline and device health](docs/screenshots/live-console.jpg)
 
 To better enable our front-line workers, here is Hermes, an AI-powered Computer Vision application that helps in early detection of Wildfires using reconnaissance drones.
 
 Hermes now comes with a **web UI**: a live ops console for every camera and a flight mode for the drone, usable from any browser on the network.
-
-![Hermes live ops console](docs/screenshots/live-console.jpg)
 
 ## Citations
 
